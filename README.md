@@ -1,7 +1,9 @@
 # stargate-kernel
 
 Build a machine-optimized vanilla Linux kernel as Debian packages, from the
-latest kernel.org release, in one command. Written for a TUXEDO InfinityBook
+latest kernel.org release, in one command: trimmed to the hardware in front
+of you, compiled for its exact CPU, with a few desktop-oriented defaults and
+your own boot logo. Written for a TUXEDO InfinityBook
 Pro AMD Gen10 (Ryzen AI 9 HX 370, `znver5`) running Debian 13, but every
 machine-specific choice is an environment variable.
 
@@ -21,6 +23,42 @@ machine-specific choice is an environment variable.
 
 The script never touches the running kernel: the packages add a GRUB entry,
 the old kernel stays as fallback.
+
+## How it works, step by step
+
+1. **Pick the release.** Reads `https://www.kernel.org/releases.json` and takes
+   the latest `stable` entry (or `mainline`, the current `-rc`, with
+   `CHANNEL=mainline`), including the tarball and signature URLs kernel.org
+   publishes for it. If that exact version is already running or installed as
+   `<ver>-stargate`, it stops here: nothing to do.
+2. **Install build dependencies** that are missing (`build-essential`,
+   `libssl-dev`, `libelf-dev`, `dwarves`, `debhelper`, `libdw-dev`, `ccache`,
+   ImageMagick, ...), with `apt`.
+3. **Download and verify.** The tarball goes to `~/build/`; a tarball already
+   there is reused. Stable releases are checked against Greg Kroah-Hartman's
+   PGP key (`647F...693E`, fetched on first run); `-rc` tarballs are unsigned
+   upstream, so only HTTPS applies and the script says so.
+4. **Optional BORE patch** (`ENABLE_BORE=1`): downloaded, dry-run applied, and
+   skipped with a warning if it does not fit this version.
+5. **Configure.** Starts from the running kernel's `/boot/config-$(uname -r)`,
+   then `make localmodconfig` keeps only the modules currently loaded. That
+   throws away everything not in use *at that moment* (a USB stick you did not
+   plug in, WireGuard, NFS, the SD card reader, Bluetooth HID, IIO), so a fixed
+   `KEEP_MODULES` list forces those back as `=m`. Then the tuning:
+   `LOGO` with your image converted to a 224-color PPM, `HZ_1000`,
+   `IOSCHED_BFQ`, `UBSAN` off, `TCP_CONG_BBR` + `DEFAULT_BBR`, and
+   `make olddefconfig` to settle dependencies.
+6. **Verify the config.** Every symbol requested above is grepped back from
+   `.config`; a missing one aborts the build naming it. Kconfig silently drops
+   unknown or dependency-less symbols, this is the only way to notice.
+   `CONFIG_ONLY=1` ends here.
+7. **Build.** `make -j$(nproc) bindeb-pkg` with `KCFLAGS=-march=znver5 -O2`
+   (vanilla kernel.org has no per-microarchitecture Kconfig choice, that is a
+   Debian-only patch), `LOCALVERSION=-stargate`, through `ccache`. Output:
+   `linux-image-<ver>-stargate`, `linux-headers-<ver>-stargate` (plus the
+   `-dbg` and `linux-libc-dev` packages `bindeb-pkg` always produces).
+8. **Print the install commands** and the rollback instructions. Installing
+   is your call; the script never runs `dpkg -i` itself.
 
 ## Usage
 
