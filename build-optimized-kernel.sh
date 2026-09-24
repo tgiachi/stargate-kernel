@@ -25,7 +25,8 @@
 #
 # What this does NOT do: touch the currently running/booted kernel. The new
 # kernel is only ever a `dpkg -i` away from being installed as an additional
-# boot entry; GRUB keeps the old one too.
+# boot entry; GRUB keeps the old one too. At the end it ASKS whether to install
+# (INSTALL=ask|yes|no), it never installs on its own by default.
 #
 # TUXEDO's own kernel work (gitlab.com/tuxedocomputers/development/packages)
 # is hardware-enablement (fan control, keyboard backlight, EC/WMI sensors via
@@ -57,6 +58,10 @@ LOGO_SIZE="${LOGO_SIZE:-128}"
 CHANNEL="${CHANNEL:-stable}"
 # FORCE=1: build even if the selected release is already installed/running as -$KERNEL_NAME.
 # CONFIG_ONLY=1: stop after the .config is ready (no compile), useful to test the script.
+# INSTALL=ask (default) asks "install now?" once the packages are built, when a
+# terminal is attached, and just prints the commands otherwise; INSTALL=yes
+# installs without asking (headers first, then the image); INSTALL=no never asks.
+INSTALL="${INSTALL:-ask}"
 
 banner() {
   printf '\033[1;36m'
@@ -247,7 +252,7 @@ KEEP_MODULES="${KEEP_MODULES:-
   MMC_BLOCK MMC_SDHCI_PCI
   VFAT_FS EXFAT_FS NTFS3_FS HFSPLUS_FS ISO9660_FS UDF_FS SQUASHFS NLS_CODEPAGE_850
   NFS_FS NFS_V4 CIFS BTRFS_FS XFS_FS F2FS_FS
-  BLK_DEV_NBD DM_SNAPSHOT DM_THIN_PROVISIONING
+  BLK_DEV_LOOP BLK_DEV_NBD DM_SNAPSHOT DM_THIN_PROVISIONING
   BT_HIDP INPUT_UINPUT HID_LOGITECH HID_LOGITECH_DJ JOYSTICK_XPAD HID_PLAYSTATION SND_ALOOP
   IIO}"
 # Why each group (all verified as dropped by localmodconfig on the 7.2.7 build):
@@ -259,7 +264,9 @@ KEEP_MODULES="${KEEP_MODULES:-
 #            is inserted -> without it a card is detected and never appears
 #   fs       removable-media and network filesystems, mac disks, squashfs (ISOs,
 #            appimages), cp850 for old FAT labels
-#   block    nbd (mount qcow2), LVM snapshots/thin pools
+#   block    loop (`mount -o loop`, losetup: ISOs and disk images; without it
+#            mount fails with "failed to setup loop device"), nbd (mount
+#            qcow2), LVM snapshots/thin pools
 #   input    classic BT HID, uinput (ydotool/sunshine), Logitech receivers,
 #            gamepads, ALSA loopback (OBS)
 #   iio      the tuxedo-drivers DKMS package builds an IIO accelerometer driver
@@ -335,17 +342,61 @@ if [[ "$KEEP_SOURCE" == "0" ]]; then
   rm -rf "$SRC_DIR"
 fi
 
-cat <<EOF
+# --------------------------------------------------------------------------- #
+# 8. Install (asks first)
+# --------------------------------------------------------------------------- #
+case "$INSTALL" in ask|yes|no) ;; *) die "INSTALL must be ask, yes or no (got '$INSTALL')";; esac
+
+# Several builds leave several revisions in BUILD_DIR: take the newest of each
+# (the glob for the image does not match the -dbg package, its name continues
+# with "-dbg_", not "_").
+newest_deb() { ls -1t "$BUILD_DIR"/$1 2>/dev/null | head -n 1; }
+HEADERS_DEB="$(newest_deb "linux-headers-${KREL}${LOCALVERSION}_*_amd64.deb")"
+IMAGE_DEB="$(newest_deb "linux-image-${KREL}${LOCALVERSION}_*_amd64.deb")"
+[[ -f "$HEADERS_DEB" && -f "$IMAGE_DEB" ]] || die "could not find the freshly built headers/image .deb in $BUILD_DIR"
+
+print_install_help() {
+  cat <<EOF
 
 To install (adds a new GRUB entry, does NOT touch the currently running kernel).
 Headers FIRST, image SECOND, as two separate commands: the image's postinst
 triggers DKMS (tuxedo-drivers, tuxedo-yt6801 = the 2.5GbE NIC driver), which
 needs the matching headers already configured or it silently builds nothing.
-  cd $BUILD_DIR
-  sudo dpkg -i linux-headers-${KREL}${LOCALVERSION}_*.deb
-  sudo dpkg -i linux-image-${KREL}${LOCALVERSION}_*.deb
+  sudo dpkg -i $HEADERS_DEB
+  sudo dpkg -i $IMAGE_DEB
   sudo dkms status | grep '${KREL}${LOCALVERSION}'   # expect tuxedo-drivers + tuxedo-yt6801 "installed"
 
 To roll back, just reboot and pick the old kernel from the GRUB menu,
 or 'sudo apt remove linux-image-${KREL}${LOCALVERSION}'.
 EOF
+}
+
+want_install=0
+case "$INSTALL" in
+  yes) want_install=1 ;;
+  ask)
+    if [[ -t 0 && -t 1 ]]; then
+      printf '\n'
+      read -r -p "Install ${KREL}${LOCALVERSION} now? It adds a GRUB entry, the running kernel is untouched. [y/N] " reply || reply=""
+      [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]] && want_install=1
+    fi
+    ;;
+esac
+
+if (( want_install )); then
+  log "Installing the headers first (DKMS needs them), then the image..."
+  sudo dpkg -i "$HEADERS_DEB" || die "installing $HEADERS_DEB failed, nothing else was installed"
+  sudo dpkg -i "$IMAGE_DEB" || die "installing $IMAGE_DEB failed (a DKMS module that does not build is the usual cause: see the output above). Remove it with: sudo dpkg --purge linux-image-${KREL}${LOCALVERSION} linux-headers-${KREL}${LOCALVERSION}"
+
+  log "DKMS status for ${KREL}${LOCALVERSION}:"
+  dkms_state="$(sudo dkms status 2>/dev/null | grep -F "${KREL}${LOCALVERSION}" || true)"
+  printf '%s\n' "${dkms_state:-  (no DKMS module registered for this kernel)}"
+  if [[ -n "$dkms_state" && "$dkms_state" == *installed* && "$dkms_state" != *built* ]]; then
+    log "All DKMS modules are installed."
+  else
+    warn "check the DKMS lines above: every module for ${KREL}${LOCALVERSION} should say \"installed\" (tuxedo-drivers, tuxedo-yt6801)"
+  fi
+  log "Installed. Reboot and pick ${KREL}${LOCALVERSION} in GRUB. Roll back by choosing the old kernel there, then: sudo apt remove linux-image-${KREL}${LOCALVERSION}"
+else
+  print_install_help
+fi

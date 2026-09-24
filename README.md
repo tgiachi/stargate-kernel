@@ -81,15 +81,27 @@ CONFIG_ONLY=1 ./build-optimized-kernel.sh      # stop once .config is ready, no 
 | `JOBS` | `nproc` | parallel jobs |
 | `KEEP_SOURCE` | `1` | `0` deletes the source tree after the build |
 | `FORCE` / `CONFIG_ONLY` | `0` | see above |
+| `INSTALL` | `ask` | `ask`, `yes` or `no`: whether to offer to install at the end |
 
 Build dependencies are installed automatically with `apt` when missing.
 A cold build takes ~8 minutes on 24 threads; rebuilds with a warm `ccache` 2–3.
 
 ## Install
 
-Headers **first**, image **second**, two separate commands: the image's
-postinst triggers DKMS, which needs the matching headers already configured
-or it silently builds nothing.
+When the build finishes the script asks **"Install <ver>-stargate now?"** and,
+on `y`, installs the headers **first** and the image **second** (two separate
+`dpkg -i`: the image's postinst triggers DKMS, which needs the matching headers
+already configured or it silently builds nothing), then prints the DKMS status
+and warns if any module is not `installed`. It picks the newest revision of each
+package when `~/build` holds several.
+
+| `INSTALL=` | Behaviour |
+| --- | --- |
+| `ask` (default) | asks when a terminal is attached; otherwise only prints the commands |
+| `yes` | installs without asking |
+| `no` | never asks, only prints the commands |
+
+To do it by hand:
 
 ```sh
 cd ~/build
@@ -120,7 +132,8 @@ symbol. That is how these were found the first time:
 - BFQ is `IOSCHED_BFQ`, not `MQ_IOSCHED_BFQ`
 - `DEFAULT_TCP_CONG` is derived from a `choice`; set `DEFAULT_BBR` instead
 - `localmodconfig` drops anything not loaded right now: USB sticks, WireGuard,
-  NFS, the SD reader, Bluetooth HID, `CONFIG_IIO` (which TUXEDO's DKMS
+  NFS, the SD reader, Bluetooth HID, loop devices (`mount -o loop` on an ISO
+  failed with "failed to setup loop device"), `CONFIG_IIO` (which TUXEDO's DKMS
   drivers need to build at all)
 
 ## Requirements
