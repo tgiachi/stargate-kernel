@@ -36,8 +36,9 @@ the old kernel stays as fallback.
    ImageMagick, ...), with `apt`.
 3. **Download and verify.** The tarball goes to `~/build/`; a tarball already
    there is reused. Stable releases are checked against Greg Kroah-Hartman's
-   PGP key (`647F...693E`, fetched on first run); `-rc` tarballs are unsigned
-   upstream, so only HTTPS applies and the script says so.
+   PGP key (`647F...693E`, fetched on first run), streaming the decompressed
+   tar through `gpg` so no 1.6 GB `.tar` is written just to check it; `-rc`
+   tarballs are unsigned upstream, so only HTTPS applies and the script says so.
 4. **Optional BORE patch** (`ENABLE_BORE=1`): downloaded, dry-run applied, and
    skipped with a warning if it does not fit this version.
 5. **Configure.** Starts from the running kernel's `/boot/config-$(uname -r)`,
@@ -57,8 +58,13 @@ the old kernel stays as fallback.
    Debian-only patch), `LOCALVERSION=-stargate`, through `ccache`. Output:
    `linux-image-<ver>-stargate`, `linux-headers-<ver>-stargate` (plus the
    `-dbg` and `linux-libc-dev` packages `bindeb-pkg` always produces).
-8. **Print the install commands** and the rollback instructions. Installing
-   is your call; the script never runs `dpkg -i` itself.
+8. **Prune** (`PRUNE=1`, default): keeps only the newest image and headers
+   `.deb` in `~/build` and deletes the rest of what `bindeb-pkg` leaves behind:
+   the `-dbg` package (~1 GB per build), `linux-libc-dev`, older revisions and
+   their `.buildinfo`/`.changes`, and any decompressed `linux-*.tar` left by
+   older versions of the script (only when its `.tar.xz` is still there).
+9. **Offer to install** (see [Install](#install)), or print the commands and the
+   rollback instructions. The script never runs `dpkg -i` without you saying yes.
 
 ## Usage
 
@@ -83,6 +89,7 @@ CONFIG_ONLY=1 ./build-optimized-kernel.sh      # stop once .config is ready, no 
 | `KEEP_SOURCE` | `1` | `0` deletes the source tree after the build |
 | `FORCE` / `CONFIG_ONLY` | `0` | see above |
 | `INSTALL` | `ask` | `ask`, `yes` or `no`: whether to offer to install at the end |
+| `PRUNE` | `1` | `0` keeps every `.deb` (including `-dbg` and older revisions) in `BUILD_DIR` |
 
 Build dependencies are installed automatically with `apt` when missing.
 A cold build takes ~8 minutes on 24 threads; rebuilds with a warm `ccache` 2–3.

@@ -62,6 +62,12 @@ CHANNEL="${CHANNEL:-stable}"
 # terminal is attached, and just prints the commands otherwise; INSTALL=yes
 # installs without asking (headers first, then the image); INSTALL=no never asks.
 INSTALL="${INSTALL:-ask}"
+# PRUNE=1 (default): once the build succeeds, keep only the newest linux-image and
+# linux-headers .deb in BUILD_DIR and delete the rest of what bindeb-pkg leaves
+# behind (-dbg image, linux-libc-dev, older revisions, their .buildinfo/.changes,
+# and any decompressed linux-*.tar from older versions of this script). The -dbg
+# package alone is ~1 GB per build. PRUNE=0 keeps everything.
+PRUNE="${PRUNE:-1}"
 # KEEP_FAMILIES: prefixes of Kconfig symbols whose drivers are restored, all of
 # them, from the stock Debian config after localmodconfig (see below). REF_CONFIG
 # is the reference: by default the newest /boot/config-*+deb*-amd64, so one Debian
@@ -191,10 +197,11 @@ if [[ -f "linux-${KVER}.tar.sign" && "$TARBALL" == *.xz ]]; then
       647F28654894E3BD457199BE38DBBDC86092693E \
       ABAF11C65A2970B130ABE3C479BE3E4300411886 2>/dev/null || \
     warn "could not fetch the PGP keys, proceeding without signature verification"
-  if [[ ! -f "linux-${KVER}.tar" ]]; then
-    unxz -k "$TARBALL"
-  fi
-  if gpg --verify "linux-${KVER}.tar.sign" "linux-${KVER}.tar" 2>&1 | tee /tmp/gpg-verify.log | grep -q "Good signature"; then
+  # The signature covers the uncompressed .tar: stream it from unxz instead of
+  # writing a 1.6 GB linux-X.Y.Z.tar to disk just to check it.
+  gpg_out="$(unxz -c "$TARBALL" | gpg --verify "linux-${KVER}.tar.sign" - 2>&1 || true)"
+  printf '%s\n' "$gpg_out" > /tmp/gpg-verify.log
+  if grep -q "Good signature" <<< "$gpg_out"; then
     log "Signature verified."
   else
     warn "signature NOT verified (see /tmp/gpg-verify.log) — proceeding anyway, the tarball comes from cdn.kernel.org over HTTPS"
@@ -399,6 +406,38 @@ newest_deb() { ls -1t "$BUILD_DIR"/$1 2>/dev/null | head -n 1; }
 HEADERS_DEB="$(newest_deb "linux-headers-${KREL}${LOCALVERSION}_*_amd64.deb")"
 IMAGE_DEB="$(newest_deb "linux-image-${KREL}${LOCALVERSION}_*_amd64.deb")"
 [[ -f "$HEADERS_DEB" && -f "$IMAGE_DEB" ]] || die "could not find the freshly built headers/image .deb in $BUILD_DIR"
+
+# Delete the build leftovers, never the two packages picked above nor the
+# .buildinfo/.changes of their revision. Runs in a subshell so nullglob does not
+# leak. Only names this script's build produces are matched.
+prune_build_dir() {
+  local revision keep_prefix f size total=0 count=0
+  revision="${IMAGE_DEB##*/}"; revision="${revision#*_}"; revision="${revision%_amd64.deb}"   # e.g. 7.2.7-9
+  keep_prefix="$BUILD_DIR/linux-upstream_${revision}_amd64"
+  shopt -s nullglob
+  for f in "$BUILD_DIR"/linux-image-*-"${KERNEL_NAME}"_*.deb \
+           "$BUILD_DIR"/linux-image-*-"${KERNEL_NAME}"-dbg_*.deb \
+           "$BUILD_DIR"/linux-headers-*-"${KERNEL_NAME}"_*.deb \
+           "$BUILD_DIR"/linux-libc-dev_*.deb \
+           "$BUILD_DIR"/linux-upstream_*.buildinfo \
+           "$BUILD_DIR"/linux-upstream_*.changes \
+           "$BUILD_DIR"/linux-*.tar; do
+    [[ "$f" == "$IMAGE_DEB" || "$f" == "$HEADERS_DEB" ]] && continue
+    [[ "$f" == "$keep_prefix".buildinfo || "$f" == "$keep_prefix".changes ]] && continue
+    # a plain .tar is only a leftover when the .tar.xz it came from is still there
+    [[ "$f" == *.tar && ! -f "$f.xz" ]] && continue
+    size="$(stat -c %s "$f")"
+    rm -f -- "$f" || continue
+    total=$((total + size))
+    count=$((count + 1))
+  done
+  log "PRUNE: removed $count file(s), $(numfmt --to=iec "$total") freed. Kept $(basename "$IMAGE_DEB") and $(basename "$HEADERS_DEB")."
+}
+if [[ "$PRUNE" == "1" ]]; then
+  ( prune_build_dir )
+else
+  log "PRUNE=$PRUNE: leaving the build directory as it is."
+fi
 
 print_install_help() {
   cat <<EOF
