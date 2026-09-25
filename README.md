@@ -132,8 +132,9 @@ symbol. That is how these were found the first time:
 - BFQ is `IOSCHED_BFQ`, not `MQ_IOSCHED_BFQ`
 - `DEFAULT_TCP_CONG` is derived from a `choice`; set `DEFAULT_BBR` instead
 - `localmodconfig` drops anything not loaded right now: USB sticks, WireGuard,
-  NFS, the SD reader, Bluetooth HID, loop devices (`mount -o loop` on an ISO
-  failed with "failed to setup loop device"), `CONFIG_IIO` (which TUXEDO's DKMS
+  NFS, the SD reader, Bluetooth HID, `uhid` (BLE keyboards and mice stayed
+  "connected" but dead), loop devices (`mount -o loop` on an ISO failed with
+  "failed to setup loop device"), `CONFIG_IIO` (which TUXEDO's DKMS
   drivers need to build at all)
 
 ## Requirements

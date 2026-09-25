@@ -253,7 +253,7 @@ KEEP_MODULES="${KEEP_MODULES:-
   VFAT_FS EXFAT_FS NTFS3_FS HFSPLUS_FS ISO9660_FS UDF_FS SQUASHFS NLS_CODEPAGE_850
   NFS_FS NFS_V4 CIFS BTRFS_FS XFS_FS F2FS_FS
   BLK_DEV_LOOP BLK_DEV_NBD DM_SNAPSHOT DM_THIN_PROVISIONING
-  BT_HIDP INPUT_UINPUT HID_LOGITECH HID_LOGITECH_DJ JOYSTICK_XPAD HID_PLAYSTATION SND_ALOOP
+  BT_HIDP UHID INPUT_UINPUT HID_LOGITECH HID_LOGITECH_DJ JOYSTICK_XPAD HID_PLAYSTATION SND_ALOOP
   IIO}"
 # Why each group (all verified as dropped by localmodconfig on the 7.2.7 build):
 #   net      VPN/containers/VMs (tun, wireguard, br_netfilter, vhost, macvlan/tap),
@@ -267,8 +267,11 @@ KEEP_MODULES="${KEEP_MODULES:-
 #   block    loop (`mount -o loop`, losetup: ISOs and disk images; without it
 #            mount fails with "failed to setup loop device"), nbd (mount
 #            qcow2), LVM snapshots/thin pools
-#   input    classic BT HID, uinput (ydotool/sunshine), Logitech receivers,
-#            gamepads, ALSA loopback (OBS)
+#   input    classic BT HID, uhid (BLE keyboards and mice: BlueZ HID-over-GATT
+#            creates their input device through /dev/uhid; without it a
+#            Logitech K380s shows as connected and types nothing, bluetoothd
+#            logs "input-hog profile accept failed"), uinput
+#            (ydotool/sunshine), Logitech receivers, gamepads, ALSA loopback (OBS)
 #   iio      the tuxedo-drivers DKMS package builds an IIO accelerometer driver
 #            (stk8321); without CONFIG_IIO its modpost fails and DKMS installs
 #            NONE of the tuxedo modules (fan control, keyboard backlight...)
