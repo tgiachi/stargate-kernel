@@ -68,6 +68,17 @@ INSTALL="${INSTALL:-ask}"
 # and any decompressed linux-*.tar from older versions of this script). The -dbg
 # package alone is ~1 GB per build. PRUNE=0 keeps everything.
 PRUNE="${PRUNE:-1}"
+# PURGE_OLD=ask (default): after a successful install, offer to purge the older
+# -$KERNEL_NAME kernels still installed (linux-image-7.2.6-stargate, ...). The kernel
+# running now and the one just installed are always kept, and so are the stock
+# Debian ones. yes purges without asking, no leaves them. Skipped unless every
+# DKMS module of the new kernel came out "installed".
+PURGE_OLD="${PURGE_OLD:-ask}"
+# CONFIG_HISTORY: where every successful build's .config is saved (config-<ver>-<name>).
+# The next build's .config is diffed against it, and the options new in a release
+# are listed in newconfig-<ver>.txt. Kept outside BUILD_DIR so cleaning the build
+# tree does not lose the history.
+CONFIG_HISTORY="${CONFIG_HISTORY:-${XDG_STATE_HOME:-$HOME/.local/state}/stargate-kernel/configs}"
 # KEEP_FAMILIES: prefixes of Kconfig symbols whose drivers are restored, all of
 # them, from the stock Debian config after localmodconfig (see below). REF_CONFIG
 # is the reference: by default the newest /boot/config-*+deb*-amd64, so one Debian
@@ -92,6 +103,10 @@ EOF
 log() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Fail on a typo now, not after the build.
+case "$INSTALL" in ask|yes|no) ;; *) die "INSTALL must be ask, yes or no (got '$INSTALL')";; esac
+case "$PURGE_OLD" in ask|yes|no) ;; *) die "PURGE_OLD must be ask, yes or no (got '$PURGE_OLD')";; esac
 trap 'echo "ERROR: unexpected exit at line $LINENO (command: $BASH_COMMAND)" >&2' ERR
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +260,12 @@ fi
 # --------------------------------------------------------------------------- #
 log "Configuring from /boot/config-$(uname -r)..."
 cp "/boot/config-$(uname -r)" .config
+# What this release adds on top of the running kernel's config. The olddefconfig
+# below takes the default of every one of these without saying a word: list them.
+mkdir -p "$CONFIG_HISTORY"
+NEWCONFIG_FILE="$CONFIG_HISTORY/newconfig-${KREL}.txt"
+make -s listnewconfig 2>/dev/null | grep -E '^(# )?CONFIG_' > "$NEWCONFIG_FILE" || true
+log "Options new in $KREL vs /boot/config-$(uname -r): $(wc -l < "$NEWCONFIG_FILE"), $(grep -cE '^CONFIG_.*=[ym]$' "$NEWCONFIG_FILE" || true) of them on by default (list: $NEWCONFIG_FILE)"
 make olddefconfig
 log "Trimming to modules actually loaded on this machine (localmodconfig)..."
 # NB: with `set -o pipefail` on, `yes` dying of SIGPIPE once make stops
@@ -367,6 +388,33 @@ if [[ -n "$LOGO_PPM" ]]; then
   grep -qF "CONFIG_LOGO_LINUX_CLUT224_FILE=\"$LOGO_PPM\"" .config || die "custom logo path did not land in .config"
 fi
 
+# What differs from the last kernel this script built: an earlier run of the same
+# release (so a change to the script shows up), else the newest other release.
+config_symbols() {   # one "NAME value" line per symbol, "n" for "is not set"
+  sed -nE 's/^CONFIG_([A-Za-z0-9_]+)=(.*)$/\1 \2/p; s/^# CONFIG_([A-Za-z0-9_]+) is not set$/\1 n/p' "$1" | LC_ALL=C sort
+}
+config_diff() {      # "+ added", "- removed", "~ changed", by symbol name; a symbol that is only "n" on one side is noise
+  awk 'NR == FNR { old[$1] = substr($0, length($1) + 2); next }
+       { val = substr($0, length($1) + 2)
+         if (!($1 in old)) { if (val != "n") print "+ " $1 "=" val }
+         else { if (old[$1] != val) print "~ " $1 ": " old[$1] " -> " val; delete old[$1] } }
+       END { for (k in old) if (old[k] != "n") print "- " k "=" old[k] }' \
+    <(config_symbols "$1") <(config_symbols "$2") | LC_ALL=C sort -k2
+}
+SNAPSHOT="$CONFIG_HISTORY/config-${KREL}-${KERNEL_NAME}"
+prev_config="$SNAPSHOT"
+[[ -f "$prev_config" ]] || prev_config="$(ls -1v "$CONFIG_HISTORY"/config-* 2>/dev/null | tail -n 1 || true)"
+if [[ -f "$prev_config" ]]; then
+  DIFF_FILE="$CONFIG_HISTORY/diff-${KREL}-${KERNEL_NAME}.txt"
+  config_diff "$prev_config" .config > "$DIFF_FILE"
+  log "Config vs the last build ($(basename "$prev_config")): $(grep -c '^+ ' "$DIFF_FILE" || true) added, $(grep -c '^- ' "$DIFF_FILE" || true) removed, $(grep -c '^~ ' "$DIFF_FILE" || true) changed (full list: $DIFF_FILE)"
+  sed 's/^/    /' "$DIFF_FILE" | head -n 30
+  diff_lines="$(wc -l < "$DIFF_FILE")"
+  if (( diff_lines > 30 )); then printf '    ... %d more in %s\n' "$((diff_lines - 30))" "$DIFF_FILE"; fi
+else
+  log "No earlier build config in $CONFIG_HISTORY: this one becomes the baseline once the build succeeds."
+fi
+
 # CPU target: vanilla kernel.org has no per-microarch Kconfig choices
 # (those are a Debian-only patch to their own kernel package — verified:
 # arch/x86/Kconfig.cpu here only goes up to legacy options like MATOM).
@@ -386,6 +434,8 @@ fi
 time nice -n 10 make -j"$JOBS" LOCALVERSION="$LOCALVERSION" "${EXTRA_MAKE_ARGS[@]}" bindeb-pkg
 
 banner "build complete: linux ${KREL}-${KERNEL_NAME}"
+cp -f .config "$SNAPSHOT"
+log "Saved this build's config as $SNAPSHOT (the next build is diffed against it)."
 log "Produced .deb packages:"
 ls -la "$BUILD_DIR"/*"${KREL}${LOCALVERSION}"*.deb 2>/dev/null || ls -la "$BUILD_DIR"/linux-*.deb
 
@@ -397,8 +447,6 @@ fi
 # --------------------------------------------------------------------------- #
 # 8. Install (asks first)
 # --------------------------------------------------------------------------- #
-case "$INSTALL" in ask|yes|no) ;; *) die "INSTALL must be ask, yes or no (got '$INSTALL')";; esac
-
 # Several builds leave several revisions in BUILD_DIR: take the newest of each
 # (the glob for the image does not match the -dbg package, its name continues
 # with "-dbg_", not "_").
@@ -455,6 +503,43 @@ or 'sudo apt remove linux-image-${KREL}${LOCALVERSION}'.
 EOF
 }
 
+# Revisions of one release replace each other in place (same package name), so
+# what piles up is other RELEASES: linux-image-7.2.6-stargate next to 7.2.7. Never
+# touched: the release just installed, the one running now (the fallback, and dpkg
+# would remove it from under you) and every kernel not named -$KERNEL_NAME, the
+# stock Debian ones included (REF_CONFIG reads one of their configs).
+purge_old_kernels() {
+  local status pkg release old=()
+  while read -r status pkg; do
+    [[ "$status" == ii || "$status" == rc ]] || continue
+    release="${pkg#linux-image-}"; release="${release#linux-headers-}"
+    [[ "$release" == "${KREL}${LOCALVERSION}" || "$release" == "$(uname -r)" ]] && continue
+    old+=("$pkg")
+  done < <(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' "linux-image-*${LOCALVERSION}" "linux-headers-*${LOCALVERSION}" 2>/dev/null)
+
+  if ((${#old[@]} == 0)); then
+    log "PURGE_OLD: no older ${KERNEL_NAME} kernel installed."
+    return 0
+  fi
+  log "PURGE_OLD: older ${KERNEL_NAME} kernels installed (kept: ${KREL}${LOCALVERSION} new, $(uname -r) running): ${old[*]}"
+
+  local do_purge=0 reply
+  case "$PURGE_OLD" in
+    yes) do_purge=1 ;;
+    ask)
+      if [[ -t 0 && -t 1 ]]; then
+        read -r -p "Purge them now? Their GRUB entries and DKMS modules go with them. [y/N] " reply || reply=""
+        [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]] && do_purge=1
+      fi
+      ;;
+  esac
+  if (( do_purge )); then
+    sudo dpkg --purge "${old[@]}" || warn "purging ${old[*]} failed, see the output above"
+  else
+    log "Not purged. To do it later: sudo dpkg --purge ${old[*]}"
+  fi
+}
+
 want_install=0
 case "$INSTALL" in
   yes) want_install=1 ;;
@@ -475,10 +560,17 @@ if (( want_install )); then
   log "DKMS status for ${KREL}${LOCALVERSION}:"
   dkms_state="$(sudo dkms status 2>/dev/null | grep -F "${KREL}${LOCALVERSION}" || true)"
   printf '%s\n' "${dkms_state:-  (no DKMS module registered for this kernel)}"
+  dkms_ok=0
   if [[ -n "$dkms_state" && "$dkms_state" == *installed* && "$dkms_state" != *built* ]]; then
     log "All DKMS modules are installed."
+    dkms_ok=1
   else
     warn "check the DKMS lines above: every module for ${KREL}${LOCALVERSION} should say \"installed\" (tuxedo-drivers, tuxedo-yt6801)"
+  fi
+  if (( dkms_ok )); then
+    purge_old_kernels
+  else
+    warn "PURGE_OLD skipped: older ${KERNEL_NAME} kernels stay as a fallback until the DKMS modules are sorted out"
   fi
   log "Installed. Reboot and pick ${KREL}${LOCALVERSION} in GRUB. Roll back by choosing the old kernel there, then: sudo apt remove linux-image-${KREL}${LOCALVERSION}"
 else

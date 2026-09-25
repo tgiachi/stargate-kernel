@@ -48,16 +48,25 @@ the old kernel stays as fallback.
    `KEEP_MODULES` list forces those back as `=m`. Then the tuning:
    `LOGO` with your image converted to a 224-color PPM, `HZ_1000`,
    `IOSCHED_BFQ`, `UBSAN` off, `TCP_CONG_BBR` + `DEFAULT_BBR`, and
-   `make olddefconfig` to settle dependencies.
-6. **Verify the config.** Every symbol requested above is grepped back from
+   `make olddefconfig` to settle dependencies. Before that, `make listnewconfig`
+   lists the options this release adds to the running kernel's config (they are
+   otherwise taken at their default in silence) into
+   `newconfig-<ver>.txt` in `CONFIG_HISTORY`.
+6. **Verify the config**, then diff it against the last build.
+ Every symbol requested above is grepped back from
    `.config`; a missing one aborts the build naming it. Kconfig silently drops
    unknown or dependency-less symbols, this is the only way to notice.
-   `CONFIG_ONLY=1` ends here.
+   The result is then compared with the `.config` of the last successful build
+   (an earlier run of the same release, else the newest other one): `+` added,
+   `-` removed, `~` changed, first 30 lines on screen, the rest in
+   `diff-<ver>-stargate.txt`. `CONFIG_ONLY=1` ends here, without saving anything.
 7. **Build.** `make -j$(nproc) bindeb-pkg` with `KCFLAGS=-march=znver5 -O2`
    (vanilla kernel.org has no per-microarchitecture Kconfig choice, that is a
    Debian-only patch), `LOCALVERSION=-stargate`, through `ccache`. Output:
    `linux-image-<ver>-stargate`, `linux-headers-<ver>-stargate` (plus the
-   `-dbg` and `linux-libc-dev` packages `bindeb-pkg` always produces).
+   `-dbg` and `linux-libc-dev` packages `bindeb-pkg` always produces). A
+   successful build saves its `.config` as `config-<ver>-stargate` in
+   `CONFIG_HISTORY`, the baseline of the next diff.
 8. **Prune** (`PRUNE=1`, default): keeps only the newest image and headers
    `.deb` in `~/build` and deletes the rest of what `bindeb-pkg` leaves behind:
    the `-dbg` package (~1 GB per build), `linux-libc-dev`, older revisions and
@@ -90,6 +99,8 @@ CONFIG_ONLY=1 ./build-optimized-kernel.sh      # stop once .config is ready, no 
 | `FORCE` / `CONFIG_ONLY` | `0` | see above |
 | `INSTALL` | `ask` | `ask`, `yes` or `no`: whether to offer to install at the end |
 | `PRUNE` | `1` | `0` keeps every `.deb` (including `-dbg` and older revisions) in `BUILD_DIR` |
+| `PURGE_OLD` | `ask` | `ask`, `yes` or `no`: purge older `-stargate` kernels after a good install (see [Install](#install)) |
+| `CONFIG_HISTORY` | `~/.local/state/stargate-kernel/configs` | saved configs, diffs and new-option lists; outside `BUILD_DIR` so cleaning the build tree keeps them |
 
 Build dependencies are installed automatically with `apt` when missing.
 A cold build takes ~8 minutes on 24 threads; rebuilds with a warm `ccache` 2–3.
@@ -108,6 +119,16 @@ package when `~/build` holds several.
 | `ask` (default) | asks when a terminal is attached; otherwise only prints the commands |
 | `yes` | installs without asking |
 | `no` | never asks, only prints the commands |
+
+**Old kernels.** Revisions of one release replace each other (same package name),
+so what piles up are other *releases* (`linux-image-7.2.6-stargate` next to
+`7.2.7`). After a successful install, and only if every DKMS module came out
+`installed`, the script lists the older `-stargate` packages and offers to
+`dpkg --purge` them (`PURGE_OLD=ask|yes|no`). Always kept: the release just
+installed, the one running right now (your fallback) and every kernel not named
+`-stargate`, the stock Debian ones included, since `REF_CONFIG` reads one of
+their configs. Because the running kernel is kept, the release before it goes at
+the *following* install: one fallback, no pile.
 
 To do it by hand:
 
