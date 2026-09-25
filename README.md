@@ -74,6 +74,7 @@ CONFIG_ONLY=1 ./build-optimized-kernel.sh      # stop once .config is ready, no 
 | `MARCH` | `znver5` | `-march` passed to the compiler (`gcc -march=native -Q --help=target` tells you yours) |
 | `KERNEL_NAME` | `stargate` | `LOCALVERSION` suffix and package name |
 | `CHANNEL` | `stable` | `stable` or `mainline` (-rc) |
+| `KEEP_FAMILIES` | HID, input, Bluetooth, USB serial, gamepads, tablets, Type-C, USB audio | Kconfig prefixes whose drivers are **all** restored from the stock Debian config (`REF_CONFIG`, default the newest `/boot/config-*+deb*-amd64`, so one Debian kernel must stay installed); `""` turns it off. Existing options are left alone; unmet ones are dropped and counted |
 | `KEEP_MODULES` | see script | Kconfig symbols forced to `=m` after `localmodconfig`; replaces the list, does not extend it |
 | `LOGO_FILE` / `LOGO_SIZE` | `logo/stargate-logo.png` / `128` | boot logo; `LOGO_FILE=""` keeps Tux |
 | `ENABLE_BORE` / `BORE_PATCH_URL` | `0` | apply the BORE scheduler patch, best-effort (skipped if it does not apply) |
@@ -131,6 +132,12 @@ symbol. That is how these were found the first time:
 
 - BFQ is `IOSCHED_BFQ`, not `MQ_IOSCHED_BFQ`
 - `DEFAULT_TCP_CONG` is derived from a `choice`; set `DEFAULT_BBR` instead
+- `KEEP_FAMILIES` is the general answer to the next item: instead of naming one
+  module per breakage it restores whole families of plug-in peripherals from the
+  stock Debian config (about 366 options, 357 of them apply to a 7.2 kernel on
+  this laptop: Apple, Microsoft, Wacom, Sony, Steam HID drivers, FTDI/CP210x/
+  PL2303 serial adapters, gamepads, tablets, USB audio...), adding ~260 small
+  modules. The rest are Chromebook, PCMCIA and PMIC parts that cannot apply.
 - `localmodconfig` drops anything not loaded right now: USB sticks, WireGuard,
   NFS, the SD reader, Bluetooth HID, `uhid` (BLE keyboards and mice stayed
   "connected" but dead), loop devices (`mount -o loop` on an ISO failed with

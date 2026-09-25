@@ -62,6 +62,12 @@ CHANNEL="${CHANNEL:-stable}"
 # terminal is attached, and just prints the commands otherwise; INSTALL=yes
 # installs without asking (headers first, then the image); INSTALL=no never asks.
 INSTALL="${INSTALL:-ask}"
+# KEEP_FAMILIES: prefixes of Kconfig symbols whose drivers are restored, all of
+# them, from the stock Debian config after localmodconfig (see below). REF_CONFIG
+# is the reference: by default the newest /boot/config-*+deb*-amd64, so one Debian
+# kernel has to stay installed. KEEP_FAMILIES="" turns the feature off.
+KEEP_FAMILIES="${KEEP_FAMILIES-UHID HID_ I2C_HID USB_HID BT_ INPUT_ JOYSTICK_ TABLET_ MOUSE_ KEYBOARD_ SND_USB TYPEC USB4 THUNDERBOLT USB_ACM USB_WDM USB_SERIAL}"
+REF_CONFIG="${REF_CONFIG:-$(ls -1v /boot/config-*+deb*-amd64 2>/dev/null | tail -n 1 || true)}"
 
 banner() {
   printf '\033[1;36m'
@@ -91,7 +97,10 @@ cat <<EOF
   What is different from the stock Debian kernel:
     - CPU target     -march=$MARCH (Debian: generic x86-64)
     - config         localmodconfig: only the modules this machine loads,
-                     plus KEEP_MODULES for hot-plug/VPN/network shares
+                     plus KEEP_MODULES for hot-plug/VPN/network shares and
+                     KEEP_FAMILIES: every HID/input/Bluetooth/USB-serial driver
+                     of the stock Debian config, so a peripheral you have not
+                     plugged in yet still works
     - scheduler tick HZ=1000 (Debian: 250)
     - I/O scheduler  BFQ available as a module
     - TCP            BBR as default congestion control (Debian: CUBIC)
@@ -279,6 +288,34 @@ log "Re-enabling modules localmodconfig drops for hardware/services not active r
 # shellcheck disable=SC2086
 ./scripts/config $(printf -- '--module %s ' $KEEP_MODULES)
 
+# Whole families of plug-in peripherals (input, HID, Bluetooth, USB serial...).
+# localmodconfig drops every driver whose device is not plugged in during the
+# build, and KEEP_MODULES can only name them one by one: UHID, IIO and loop were
+# each found by breaking something. So restore, from the stock Debian config,
+# every symbol of these families, with the value Debian gives it (module ->
+# module, sub-option -> enabled). Symbols the config already has are left alone,
+# so nothing built in gets turned into a module. Best effort: what lacks a
+# dependency, or no longer exists in this kernel, is dropped by olddefconfig and
+# reported after it.
+FAMILY_SYMS=()
+if [[ -n "$KEEP_FAMILIES" ]]; then
+  if [[ -f "${REF_CONFIG:-}" ]]; then
+    read -ra family_list <<< "$KEEP_FAMILIES"
+    family_regex="^CONFIG_($(IFS='|'; echo "${family_list[*]}"))[A-Z0-9_]*=[ym]$"
+    family_args=()
+    while IFS='=' read -r name value; do
+      name="${name#CONFIG_}"
+      FAMILY_SYMS+=("$name")
+      grep -qE "^CONFIG_${name}=[ym]$" .config && continue
+      if [[ "$value" == "m" ]]; then family_args+=(--module "$name"); else family_args+=(--enable "$name"); fi
+    done < <(grep -E "$family_regex" "$REF_CONFIG")
+    log "Restoring peripheral families ($KEEP_FAMILIES) from $(basename "$REF_CONFIG"): ${#FAMILY_SYMS[@]} options, $(( ${#family_args[@]} / 2 )) of them missing right now..."
+    if ((${#family_args[@]})); then ./scripts/config "${family_args[@]}"; fi
+  else
+    warn "no stock Debian config in /boot (REF_CONFIG), skipping KEEP_FAMILIES: keep one Debian kernel installed"
+  fi
+fi
+
 log "Enabling the boot logo (CONFIG_LOGO, off by default on Debian)..."
 ./scripts/config --enable LOGO
 LOGO_PPM=""
@@ -313,6 +350,11 @@ for sym in LOGO HZ_1000 IOSCHED_BFQ TCP_CONG_BBR $KEEP_MODULES; do
   grep -qE "^CONFIG_${sym}=[ym]$" .config || die "CONFIG_${sym} is not enabled after olddefconfig (wrong symbol name or unmet dependency)"
 done
 grep -qE '^CONFIG_DEFAULT_TCP_CONG="bbr"$' .config || die "DEFAULT_TCP_CONG is not bbr"
+if ((${#FAMILY_SYMS[@]})); then
+  landed=0
+  for sym in "${FAMILY_SYMS[@]}"; do grep -qE "^CONFIG_${sym}=[ym]$" .config && landed=$((landed + 1)); done
+  log "Peripheral families: ${landed}/${#FAMILY_SYMS[@]} options are in .config (the rest lack a dependency or no longer exist in this kernel)."
+fi
 grep -qE '^CONFIG_UBSAN=y' .config && die "UBSAN is still enabled"
 if [[ -n "$LOGO_PPM" ]]; then
   grep -qF "CONFIG_LOGO_LINUX_CLUT224_FILE=\"$LOGO_PPM\"" .config || die "custom logo path did not land in .config"
