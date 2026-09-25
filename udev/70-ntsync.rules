@@ -1,0 +1,5 @@
+# /dev/ntsync is created root-only by the kernel; Wine and Proton run as the
+# logged-in user and silently fall back to slower synchronization without access.
+# "uaccess" gives the user at the active seat an ACL on the device. The number
+# must stay below 73: that is where systemd turns the uaccess tag into ACLs.
+KERNEL=="ntsync", MODE="0660", TAG+="uaccess"

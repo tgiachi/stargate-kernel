@@ -369,12 +369,18 @@ log "Desktop tuning: HZ=1000 (Debian ships 250, server-leaning), BFQ I/O" \
 # DEFAULT_TCP_CONG is a derived string: setting it directly is silently reverted
 # by olddefconfig. The real knob is the DEFAULT_* choice in net/ipv4/Kconfig.
 ./scripts/config --enable TCP_CONG_BBR --enable DEFAULT_BBR --disable DEFAULT_CUBIC
+# NTSYNC: the NT synchronization emulation Wine and Proton use through
+# /dev/ntsync (Wine 11 uses it by itself when the device is there). Debian ships
+# it as a module that nothing ever loads (no modalias, no modules-load.d) and
+# localmodconfig drops it here, so it is built in: the device exists from boot.
+# The device is root-only by default, udev/70-ntsync.rules gives the logged-in user access.
+./scripts/config --enable NTSYNC
 make olddefconfig
 
 # scripts/config happily writes symbols that don't exist and olddefconfig then
 # silently discards them (that's how BFQ went missing once). Fail loudly instead.
 log "Verifying the tuning actually landed in .config..."
-for sym in LOGO HZ_1000 IOSCHED_BFQ TCP_CONG_BBR $KEEP_MODULES; do
+for sym in LOGO HZ_1000 IOSCHED_BFQ TCP_CONG_BBR NTSYNC $KEEP_MODULES; do
   grep -qE "^CONFIG_${sym}=[ym]$" .config || die "CONFIG_${sym} is not enabled after olddefconfig (wrong symbol name or unmet dependency)"
 done
 grep -qE '^CONFIG_DEFAULT_TCP_CONG="bbr"$' .config || die "DEFAULT_TCP_CONG is not bbr"

@@ -47,8 +47,8 @@ the old kernel stays as fallback.
    plug in, WireGuard, NFS, the SD card reader, Bluetooth HID, IIO), so a fixed
    `KEEP_MODULES` list forces those back as `=m`. Then the tuning:
    `LOGO` with your image converted to a 224-color PPM, `HZ_1000`,
-   `IOSCHED_BFQ`, `UBSAN` off, `TCP_CONG_BBR` + `DEFAULT_BBR`, and
-   `make olddefconfig` to settle dependencies. Before that, `make listnewconfig`
+   `IOSCHED_BFQ`, `UBSAN` off, `TCP_CONG_BBR` + `DEFAULT_BBR`, `NTSYNC` built in
+   (Wine/Proton's `/dev/ntsync`), and `make olddefconfig` to settle dependencies. Before that, `make listnewconfig`
    lists the options this release adds to the running kernel's config (they are
    otherwise taken at their default in silence) into
    `newconfig-<ver>.txt` in `CONFIG_HISTORY`.
@@ -150,6 +150,18 @@ Gentoo-inspired VT palette (`vt.default_{red,grn,blu}`) and
 to `/etc/default/grub.d/` and run `update-grub`. Removing `quiet` from the
 kernel command line (and Plymouth from the system) is what makes the logo and
 the boot log visible at all.
+
+`udev/70-ntsync.rules` is the other half of `NTSYNC`: the kernel creates
+`/dev/ntsync` root-only (systemd 257 ships no rule for it), and Wine falls back
+to slower synchronization without access. The rule tags it `uaccess`, so the
+user at the active seat gets it. Debian's own `ntsync` is a module that nothing
+loads (no modalias, no `modules-load.d`), which is why it is built in here.
+
+```sh
+sudo install -m 0644 udev/70-ntsync.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+ls -l /dev/ntsync          # after booting the new kernel
+```
 
 ## Things the script checks for you
 
